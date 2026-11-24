@@ -1,9 +1,13 @@
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 using IngameDebugConsole;
 
+/// <summary>
+/// Unity side of the garden: owns the GardenSimulation, spawns/destroys GameObjects
+/// in response to its events, and exposes commands to the UI and debug console.
+/// All garden rules live in GardenSimulation.
+/// </summary>
 public class GardenManager : MonoBehaviour
 {
     public Tilemap tilemap;
@@ -14,19 +18,38 @@ public class GardenManager : MonoBehaviour
     public PlantData[] plantDatas;
     public MutationSO[] mutations;
 
-    public Dictionary<Vector2Int, int> adjacentPlantCount = new Dictionary<Vector2Int, int>();
-    public Dictionary<Vector2Int, GameObject> plots = new Dictionary<Vector2Int, GameObject>();
-    public Dictionary<Vector2Int, Plant> plants = new Dictionary<Vector2Int, Plant>();
-    private Dictionary<string, PlantData> tempPlantNameToData;
+    [Tooltip("Use a fixed random seed so ticks are reproducible.")]
+    public bool useFixedSeed;
+    public int seed;
 
+    [Tooltip("Seeds of every plant type in plantDatas the player starts with.")]
+    [Min(0)] public int startingSeeds = 10;
 
     public Week weekManager;
-    
+
+    public GardenSimulation Simulation { get; private set; }
+
+    private readonly Dictionary<Vector2Int, HexCoords> plotViews = new Dictionary<Vector2Int, HexCoords>();
+    private readonly Dictionary<Vector2Int, Plant> plantViews = new Dictionary<Vector2Int, Plant>();
+    private Dictionary<string, PlantData> tempPlantNameToData;
+
+    private void Awake()
+    {
+        Simulation = new GardenSimulation(mutations, useFixedSeed ? seed : (int?)null);
+        Simulation.PlotAdded += OnPlotAdded;
+        Simulation.Planted += OnPlanted;
+        Simulation.Removed += OnRemoved;
+        Simulation.Matured += OnMatured;
+
+        foreach (PlantData plant in plantDatas)
+            Simulation.Inventory.AddSeeds(plant, startingSeeds);
+    }
+
     private void Start()
-    {   
+    {
         InitCommands();
         TestSpawn(8);
-        
+
         tempPlantNameToData = new Dictionary<string, PlantData>();
         tempPlantNameToData.Add("fire",plantDatas[0]);
         tempPlantNameToData.Add("nature",plantDatas[1]);
@@ -41,47 +64,34 @@ public class GardenManager : MonoBehaviour
     private void TestSpawn(int size)
     {
         for (int i = -size; i < size; i++)
-        {
             for (int j = -size; j < size; j++)
-            {
                 CreateHex(i, j);
-            }
-        }
     }
 
     private void InitCommands()
     {
         DebugLogConsole.AddCommand<int, int>("Spawn","Creates a hex at axial coordinates", CreateHex);
         DebugLogConsole.AddCommand<int, int>("SpawnNeighbours","Creates a neighbours around axial coordinates", CreateNeighbours);
-        
+
         DebugLogConsole.AddCommand<int, int, string>("Plant","Plants a crop", PlantCrop);
         DebugLogConsole.AddCommand<int, int>("Remove","Removes a crop", RemoveCrop);
 
         DebugLogConsole.AddCommand("GetCrops","List all crops on board", GetCropsCommand);
         DebugLogConsole.AddCommand("Tick","Performs a time tick", GardenTick);
+        DebugLogConsole.AddCommand("Inventory","Lists seeds in the inventory", InventoryCommand);
     }
-    
-    public void CreateHex(int x, int y)
-    {
-        Vector2Int axialPosition = new Vector2Int(x, y);
-        Vector3Int tilePosition = HexMath.AxialToOffset(axialPosition);
-        Vector3 spawnPosition = tilemap.CellToWorld(tilePosition);
-        GameObject newHex = Instantiate(hexPrefab, spawnPosition, Quaternion.identity);
-        newHex.transform.SetParent(plotsParent, false);
-        newHex.GetComponent<HexCoords>().SetText(axialPosition);
-        adjacentPlantCount.Add(axialPosition, 0);
-        plots.Add(axialPosition, newHex);
-    }
+
+    // --------------------------------------------------------------- commands
+
+    public bool HasPlot(Vector2Int pos) => Simulation.HasPlot(pos);
+
+    public void CreateHex(int x, int y) => Simulation.AddPlot(new Vector2Int(x, y));
 
     public void CreateNeighbours(int x, int y)
     {
-        Vector2Int axialPosition = new Vector2Int(x, y);
-
-        foreach (Vector2Int neighbourOffset in HexMath.Directions)
-        {
-            Vector2Int neighbourPosition = axialPosition + neighbourOffset;
-            CreateHex(neighbourPosition.x, neighbourPosition.y);
-        }
+        var center = new Vector2Int(x, y);
+        foreach (Vector2Int dir in HexMath.Directions)
+            Simulation.AddPlot(center + dir);
     }
 
     public void PlantCrop(int x, int y, string plantName)
@@ -91,213 +101,100 @@ public class GardenManager : MonoBehaviour
             Debug.LogWarning($"Unknown plant name: {plantName}");
             return;
         }
-
-        PlantCrop(x, y, data.plantId);
+        PlantCrop(new Vector2Int(x, y), data);
     }
-    
-    public void PlantCrop(int x, int y, int plantID)
+
+    public void PlantCrop(Vector2Int pos, PlantData data) => Simulation.Plant(pos, data);
+
+    public void RemoveCrop(int x, int y) => RemoveCrop(new Vector2Int(x, y));
+
+    public void RemoveCrop(Vector2Int pos)
     {
-        
-        Vector2Int axialPosition = new Vector2Int(x, y);
-        
-        if (!plots.ContainsKey(axialPosition)) { Debug.Log("No hex there"); return; }
-        if (plants.ContainsKey(axialPosition)) { Debug.Log("There is already a plant there"); return; }
-        
-        adjacentPlantCount[axialPosition] = 0;
-        SetAdjacentCount(axialPosition, adjacentPlantCount[axialPosition]);
-        adjacentPlantCount.Remove(axialPosition);
-
-        
-        Vector3Int tilePosition = HexMath.AxialToOffset(axialPosition);
-        Vector3 spawnPosition = tilemap.CellToWorld(tilePosition);
-        
-        PlantData plantData = plantDatas.FirstOrDefault(n => n.plantId == plantID);
-        GameObject newPlant = Instantiate(plantPrefab, spawnPosition, Quaternion.identity);
-        newPlant.transform.SetParent(plantsParent, false);
-        Plant plant = newPlant.GetComponent<Plant>();
-        plant.plantInstance.data = plantData;
-        plant.InitiatePlant();
-
-        plants.Add(axialPosition, plant);
+        int gained = Simulation.Remove(pos);
+        if (gained > 0)
+            Debug.Log($"Harvested {gained} seeds");
     }
-    
-    public void RemoveCrop(int x, int y)
-    {
-        Vector2Int axialPosition = new Vector2Int(x, y);
 
-        if (!plants.TryGetValue(axialPosition, out Plant plant)) return;
-        bool wasMature = plant.plantInstance.isMature;
-        Destroy(plant.gameObject);
-        plants.Remove(axialPosition);
-        
-        adjacentPlantCount.Add(axialPosition, 0);
-        List<Vector2Int> neighboursPositions = GetNeighbours(axialPosition);
-        foreach (Vector2Int neighbour in neighboursPositions)
-        {
-            if (plants.TryGetValue(neighbour, out Plant neighbourPlant))
-            {
-                if(neighbourPlant.plantInstance.isMature)
-                    adjacentPlantCount[axialPosition]++;
-            }
-        }
-        SetAdjacentCount(axialPosition, adjacentPlantCount[axialPosition]);
-        
-        if(wasMature)
-            DecrementNeighbourCounts(axialPosition);
-        
+    public void InventoryCommand()
+    {
+        if (Simulation.Inventory.Seeds.Count == 0) { Debug.Log("Inventory is empty"); return; }
+        foreach (var kv in Simulation.Inventory.Seeds)
+            Debug.Log($"{kv.Key.plantName}: {kv.Value} seeds");
     }
 
     public void GetCropsCommand()
     {
-        foreach (var kv in plants)
-            Debug.Log($"{kv.Key} {kv.Value.plantInstance.data.plantName}");
+        foreach (GardenTile tile in Simulation.Tiles.Values)
+            if (!tile.IsEmpty)
+                Debug.Log($"{tile.Position} {tile.Plant.data.plantName} (age {tile.Plant.age}{(tile.Plant.IsMature ? ", mature" : "")})");
     }
-    
-    public List<Vector2Int> GetNeighbours(Vector2Int center)
-    {
-        List<Vector2Int> neighbours = new List<Vector2Int>();
-        foreach (Vector2Int location in HexMath.Directions)
-        {
-            neighbours.Add(location + center);
-        }
-        return neighbours;
-    }
-
 
     public void GardenTick()
     {
-        UpdateMaturity();
-        Mutate();
-        Spread();
+        Simulation.Tick();
         weekManager.NextDay();
     }
 
-    private void UpdateMaturity()
-    {
-        foreach (var kv in plants)
-        {
-            PlantInstance pi = kv.Value.plantInstance;
-            pi.age += 1;
-            if (!pi.isMature && pi.age >= pi.data.maturityAge)
-            {
-                kv.Value.SetMature();
-                pi.isMature = true;
-                IncrementNeighbourCounts(kv.Key);
+    // ------------------------------------------------------- simulation events
 
-            }
-        }
+    private void OnPlotAdded(GardenTile tile)
+    {
+        Vector3 spawnPosition = tilemap.CellToWorld(HexMath.AxialToOffset(tile.Position));
+        GameObject go = Instantiate(hexPrefab, spawnPosition, Quaternion.identity);
+        go.transform.SetParent(plotsParent, false);
+
+        HexCoords view = go.GetComponent<HexCoords>();
+        view.SetText(tile.Position);
+        plotViews.Add(tile.Position, view);
+        RefreshLabel(tile.Position);
     }
 
-    public void IncrementNeighbourCounts(Vector2Int axialPosition)
+    private void OnPlanted(GardenTile tile)
     {
-        List<Vector2Int> tempNeighbours = GetNeighbours(axialPosition);
-        foreach (Vector2Int neighbour in tempNeighbours)
-        {
-            if (adjacentPlantCount.ContainsKey(neighbour))
-            {
-                adjacentPlantCount[neighbour]++;
-                SetAdjacentCount(neighbour, adjacentPlantCount[neighbour]);
+        Vector3 spawnPosition = tilemap.CellToWorld(HexMath.AxialToOffset(tile.Position));
+        GameObject go = Instantiate(plantPrefab, spawnPosition, Quaternion.identity);
+        go.transform.SetParent(plantsParent, false);
 
-            }
-        }
-    }
-    
-    public void DecrementNeighbourCounts(Vector2Int axialPosition)
-    {
-        List<Vector2Int> tempNeighbours = GetNeighbours(axialPosition);
-        foreach (Vector2Int neighbour in tempNeighbours)
-        {
-            if (adjacentPlantCount.ContainsKey(neighbour))
-            {
-                adjacentPlantCount[neighbour]--;
-                SetAdjacentCount(neighbour, adjacentPlantCount[neighbour]);
-            }
-        }
-    }
-    
-    private void SetAdjacentCount(Vector2Int pos, int value)
-    {
-        if (!plots.TryGetValue(pos, out GameObject go)) return;
-        if (!adjacentPlantCount.ContainsKey(pos)) return;
+        Plant view = go.GetComponent<Plant>();
+        view.Init(tile.Plant);
+        plantViews.Add(tile.Position, view);
 
-        adjacentPlantCount[pos] = value;
-        go.GetComponent<HexCoords>().NeighbourCount = value;   // property setter updates text
+        // A plant may start mature (maturityAge 0), which changes neighbour counts.
+        RefreshLabelsAround(tile.Position);
     }
 
-    public void Spread()
+    private void OnRemoved(GardenTile tile, PlantInstance removed)
     {
-        Dictionary<Vector2Int, int> toPlant = new Dictionary<Vector2Int, int>();
-        foreach (var kv in plants)
+        if (plantViews.TryGetValue(tile.Position, out Plant view))
         {
-            PlantInstance pi = kv.Value.plantInstance;
-            if (!pi.isMature) continue;
-
-            foreach (Vector2Int neighbourPosition in GetNeighbours(kv.Key))
-            {
-                if (!plots.ContainsKey(neighbourPosition)) continue;
-                if (plants.ContainsKey(neighbourPosition)) continue;
-
-                if (Random.value < pi.data.spreadBaseMultiplier)
-                    toPlant.TryAdd(neighbourPosition, pi.data.plantId);
-            }
+            Destroy(view.gameObject);
+            plantViews.Remove(tile.Position);
         }
-        var taken = new HashSet<Vector2Int>();
-        foreach (var (pos, type) in toPlant)
-        {
-            if (!taken.Add(pos)) continue;
-            PlantCrop(pos.x, pos.y, type);
-        }
+        RefreshLabelsAround(tile.Position);
     }
-    
-    public void Mutate()
+
+    private void OnMatured(GardenTile tile)
     {
-        var toPlant = new List<(Vector2Int spot, PlantData mutant)>();
-
-        foreach (var kv in adjacentPlantCount)
-        {
-            Vector2Int spot = kv.Key;
-
-            if (kv.Value < 2) continue;
-            if (plants.ContainsKey(spot)) continue;
-
-            var counts = new Dictionary<PlantData, int>();
-            foreach (Vector2Int n in GetNeighbours(spot))
-            {
-                if (!plants.TryGetValue(n, out Plant plant)) continue;
-                if (!plant.plantInstance.isMature) continue;
-
-                PlantData data = plant.plantInstance.data;
-                counts[data] = counts.TryGetValue(data, out int c) ? c + 1 : 1;
-            }
-
-            MutationSO best = null;
-            foreach (MutationSO m in mutations)
-            {
-                if (!Matches(m, counts)) continue;
-                best = m;
-            }
-
-            if (best == null) continue;
-            if (Random.value >= best.mutationBaseChance) continue;
-            toPlant.Add((spot, best.mutant));
-        }
-
-        var taken = new HashSet<Vector2Int>();
-        foreach (var (spot, mutant) in toPlant)
-        {
-            if (!taken.Add(spot)) continue;
-            PlantCrop(spot.x, spot.y, mutant.plantId);
-        }
+        if (plantViews.TryGetValue(tile.Position, out Plant view))
+            view.Refresh();
+        RefreshLabelsAround(tile.Position);
     }
-    
-    private bool Matches(MutationSO m, Dictionary<PlantData, int> counts)
+
+    // ------------------------------------------------------------ debug labels
+
+    private void RefreshLabelsAround(Vector2Int pos)
     {
-        if (m.mutationIngredients == null || m.mutationIngredients.Count == 0)
-            return false;
-        foreach (MutationIngredient ing in m.mutationIngredients)
-            if (!counts.TryGetValue(ing.plant, out int have) || have < ing.amount)
-                return false;
-        return true;
+        RefreshLabel(pos);
+        foreach (Vector2Int dir in HexMath.Directions)
+            RefreshLabel(pos + dir);
+    }
+
+    /// <summary>Empty plots show their mature-neighbour count; planted plots show 0.</summary>
+    private void RefreshLabel(Vector2Int pos)
+    {
+        if (!plotViews.TryGetValue(pos, out HexCoords view)) return;
+        if (!Simulation.TryGetTile(pos, out GardenTile tile)) return;
+
+        view.NeighbourCount = tile.IsEmpty ? Simulation.CountMatureNeighbours(pos) : 0;
     }
 }
-

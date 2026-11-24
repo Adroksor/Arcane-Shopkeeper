@@ -15,7 +15,6 @@ public class HexCoords : MonoBehaviour
         get => _neighbourCount;
         set
         {
-            if (_neighbourCount == value) return;
             _neighbourCount = value;
             neighbourCount.text = $"\n{value.ToString()}";
         }

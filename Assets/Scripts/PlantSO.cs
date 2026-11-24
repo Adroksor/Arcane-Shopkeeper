@@ -1,32 +1,32 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 [CreateAssetMenu(fileName = "New Plant", menuName = "Arcane Shopkeeper/Garden/Plants")]
 public class PlantData : ScriptableObject
 {
-    public int plantId => GetInstanceID();
     public string plantName;
     [TextArea] public string description;
     public Sprite seedSprite;
     public Sprite plantSprite;
-    public int maturityAge;
+    [Min(0)] public int maturityAge;
     public int decayTime;
-    public float spreadBaseMultiplier;
+
+    /// <summary>Chance per tick to spread into each empty neighbouring plot once mature.</summary>
+    [FormerlySerializedAs("spreadBaseMultiplier")]
+    [Range(0f, 1f)] public float spreadChance;
 }
 
 [System.Serializable]
 public class PlantInstance
 {
     public PlantData data;
-    public GameObject gameObject;
-    public bool isMature;
     public int age;
-    
-    public PlantInstance(PlantData plantData, bool isMature = false)
+
+    public bool IsMature => data != null && age >= data.maturityAge;
+
+    public PlantInstance(PlantData plantData)
     {
-        this.data = plantData;
-        this.isMature = isMature;
+        data = plantData;
         age = 0;
     }
 }

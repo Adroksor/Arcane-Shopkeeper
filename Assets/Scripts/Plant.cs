@@ -1,19 +1,23 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>View for one planted crop. State lives in the GardenSimulation.</summary>
 public class Plant : MonoBehaviour
 {
     public PlantInstance plantInstance;
 
-    public void InitiatePlant()
+    private SpriteRenderer spriteRenderer;
+
+    public void Init(PlantInstance instance)
     {
-        transform.GetComponentInChildren<SpriteRenderer>().sprite = plantInstance.data.seedSprite;
+        plantInstance = instance;
+        Refresh();
     }
 
-    public void SetMature()
+    /// <summary>Shows the seed or grown sprite depending on maturity.</summary>
+    public void Refresh()
     {
-        transform.GetComponentInChildren<SpriteRenderer>().sprite = plantInstance.data.plantSprite;
+        if (spriteRenderer == null) spriteRenderer = GetComponentInChildren<SpriteRenderer>();
+        PlantData data = plantInstance.data;
+        spriteRenderer.sprite = plantInstance.IsMature ? data.plantSprite : data.seedSprite;
     }
 }
