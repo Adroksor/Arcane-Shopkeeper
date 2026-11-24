@@ -12,10 +12,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0f300d60a2440264c8b6c5022c938292, type: 3}
   m_Name: Natureleaf
   m_EditorClassIdentifier: 
-  plantName: Gloomroot
+  plantName: Natureleaf
   description: 
   seedSprite: {fileID: 1774325005, guid: c79ed0feabd7b594bbffeb7670242045, type: 3}
   plantSprite: {fileID: 191454620, guid: c79ed0feabd7b594bbffeb7670242045, type: 3}
   maturityAge: 1
   decayTime: 0
-  spreadBaseMultiplier: 0.1
+  spreadChance: 0.1

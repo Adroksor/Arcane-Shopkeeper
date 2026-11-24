@@ -50,3 +50,6 @@ TagManager:
   - name: Text
     uniqueID: 536134517
     locked: 0
+  - name: CommandUI
+    uniqueID: 986209351
+    locked: 0

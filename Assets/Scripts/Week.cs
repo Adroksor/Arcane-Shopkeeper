@@ -11,6 +11,9 @@ public class Week : MonoBehaviour
 
     private int currentDayIndex = 0; // 0..6
 
+    /// <summary>Raised with the new day index (0 = Monday ... 6 = Sunday) when the day changes.</summary>
+    public event System.Action<int> DayChanged;
+
     public string CurrentDay
     {
         get => Days[currentDayIndex];
@@ -20,6 +23,7 @@ public class Week : MonoBehaviour
             if (idx < 0 || idx == currentDayIndex) return;
             currentDayIndex = idx;
             if (currentDayText != null) currentDayText.text = $"{value}";
+            DayChanged?.Invoke(currentDayIndex);
         }
     }
 
